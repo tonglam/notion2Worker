@@ -1,0 +1,41 @@
+# Node.js dependencies
+node_modules/
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# Environment variables and secrets
+.env
+.dev.vars
+
+# Cloudflare Workers specific
+.wrangler/
+dist/
+worker/
+.mf/
+
+# Build artifacts and logs
+*.log
+logs/
+build/
+.turbo
+
+# IDE and OS specific files
+.DS_Store
+.idea/
+.vscode/
+*.sublime-project
+*.sublime-workspace
+*.swp
+.history/
+.tmp/
+Thumbs.db
+
+# Testing
+coverage/
+
+# Misc
+.git/
+*.bak
+*.tmp
+*~ 

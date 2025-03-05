@@ -1,0 +1,26 @@
+name = "notion-to-r2-worker"
+main = "worker.js"
+compatibility_date = "2025-03-05"
+
+# Trigger the worker on a schedule (every day at 5:00 AM UTC)
+# Adjust the cron pattern as needed
+[triggers]
+crons = ["0 5 * * *"]
+
+# R2 bucket binding - this connects the R2 bucket to your worker
+[[r2_buckets]]
+binding = "MY_BUCKET"
+bucket_name = "blog-data"
+
+# Environment variables
+[vars]
+# Placeholder values - set actual secrets using wrangler secret commands
+NOTION_DATABASE_ID = ""
+
+# Node module configuration - properly handle Node.js modules
+[build]
+command = "npm install"
+
+[[rules]]
+type = "CommonJS"
+globs = ["**/*.js"]
