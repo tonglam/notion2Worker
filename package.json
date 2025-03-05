@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "A lightweight tool that retrieves a database from Notion, transforms it into a JSON file, and uploads it to Cloudflare R2 storage, running on a Cloudflare Worker",
   "main": "worker.js",
+  "type": "module",
   "scripts": {
     "start": "node notion-to-r2.js",
     "dev": "wrangler dev",

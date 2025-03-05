@@ -1,6 +1,7 @@
 name = "notion-to-r2-worker"
 main = "worker.js"
 compatibility_date = "2025-03-05"
+nodejs_compat = true
 
 # Trigger the worker on a schedule (every day at 5:00 AM UTC)
 # Adjust the cron pattern as needed
@@ -14,8 +15,8 @@ bucket_name = "blog-data"
 
 # Environment variables
 [vars]
-# Placeholder values - set actual secrets using wrangler secret commands
-NOTION_DATABASE_ID = ""
+# Secrets are set using wrangler secret commands
+# NOTION_DATABASE_ID is set as a secret
 
 # Node module configuration - properly handle Node.js modules
 [build]
@@ -24,3 +25,8 @@ command = "npm install"
 [[rules]]
 type = "CommonJS"
 globs = ["**/*.js"]
+
+# Enable Workers Logs for observability
+[observability]
+enabled = true
+head_sampling_rate = 1 # Set to 1 to log 100% of requests

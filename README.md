@@ -1,108 +1,214 @@
 # Notion to R2 Worker
 
-A lightweight tool that retrieves a database from Notion, transforms it into a JSON file, and uploads it to Cloudflare R2 storage, running on a Cloudflare Worker.
+A Cloudflare Worker that automatically fetches data from a Notion database and stores it in Cloudflare R2 storage, making your Notion content available to your web applications.
 
-## Features
+## Overview
 
-- Fetches data from a Notion database
-- Converts Notion pages to Markdown
-- Structures the data into a JSON format suitable for a blog
-- Uploads the data to Cloudflare R2 storage
-- Runs on Cloudflare Workers
-- Scheduled execution
-- Manual trigger endpoint with basic auth
-- Direct PUT endpoint for R2 storage
+This worker fetches content from a specified Notion database on a regular schedule and stores it as a JSON file in Cloudflare R2 storage. This enables you to use your Notion database as a headless CMS for blogs or other content-driven websites.
 
-## Setup
+### Key Features
+
+- **Automated Content Sync**: Scheduled daily execution to keep your content fresh
+- **Simple API Endpoints**: Access your Notion data through HTTP requests
+- **Secure Configuration**: Uses Cloudflare Workers Secrets for API keys
+- **Comprehensive Logging**: Detailed logs available in the Cloudflare dashboard
+- **Built-in Monitoring**: Observability features for tracking worker execution
+
+## Setup Instructions
 
 ### Prerequisites
 
-- [Node.js](https://nodejs.org/) (v16.13.0 or higher)
-- [Wrangler CLI](https://developers.cloudflare.com/workers/wrangler/install-and-update/)
-- Cloudflare account with Workers and R2 enabled
-- Notion API key and database
+- A Cloudflare account with Workers and R2 enabled
+- A Notion database and API key
+- Node.js and npm installed locally
+- Wrangler CLI (version 3.78.6 or higher)
 
 ### Installation
 
 1. Clone this repository:
 
-   ```
+   ```bash
    git clone <repository-url>
-   cd notion-to-r2
+   cd notion-to-r2-worker
    ```
 
 2. Install dependencies:
 
-   ```
+   ```bash
    npm install
    ```
 
-3. Set up your Cloudflare account with Wrangler:
+3. Configure your worker:
 
-   ```
-   npx wrangler login
-   ```
-
-4. Create an R2 bucket named "blog-data" in your Cloudflare dashboard or using Wrangler:
-
-   ```
+   ```bash
+   # Create R2 bucket if not already created
    npx wrangler r2 bucket create blog-data
-   ```
 
-5. Add your secrets to Wrangler:
-   ```
+   # Set your Notion API key as a secret
    npx wrangler secret put NOTION_API_KEY
+
+   # Set your Notion Database ID as a secret
    npx wrangler secret put NOTION_DATABASE_ID
-   npx wrangler secret put ADMIN_KEY
    ```
 
-### Configuration
+4. Deploy the worker:
 
-- Edit `wrangler.toml` to configure your worker settings
-- Adjust the CRON schedule if needed
+   ```bash
+   npx wrangler deploy
+   ```
 
-## Usage
+## Configuration
 
-### Development
+### Notion API Setup
 
+1. Create an integration at [Notion Developers](https://www.notion.so/my-integrations)
+2. Copy the "Internal Integration Token" to use as your `NOTION_API_KEY`
+3. Share your Notion database with the integration
+4. Copy the database ID from your database URL:
+   - URL format: `https://www.notion.so/{workspace_name}/{database_id}?v={view_id}`
+   - The database ID is the part between the workspace name and the view ID
+
+### Worker Configuration (wrangler.toml)
+
+The `wrangler.toml` file contains the following configuration:
+
+```toml
+name = "notion-to-r2-worker"
+main = "worker.js"
+compatibility_date = "2025-03-05"
+nodejs_compat = true
+
+# Trigger the worker on a schedule (every day at 5:00 AM UTC)
+[triggers]
+crons = ["0 5 * * *"]
+
+# R2 bucket binding
+[[r2_buckets]]
+binding = "MY_BUCKET"
+bucket_name = "blog-data"
+
+# Logging configuration
+[observability]
+enabled = true
+head_sampling_rate = 1
 ```
-npm run dev
+
+## API Endpoints
+
+The worker exposes the following HTTP endpoints:
+
+### GET /{filename}
+
+Retrieve a file from R2 storage.
+
+Example:
+
+```bash
+curl -X GET https://notion-to-r2-worker.example.workers.dev/blog-data.json
 ```
 
-This will start a local development server.
+### POST /run-test
 
-### Deployment
+Manually trigger the Notion-to-R2 process.
 
+Example:
+
+```bash
+curl -X POST https://notion-to-r2-worker.example.workers.dev/run-test
 ```
-npm run deploy
+
+### GET /check-config
+
+Check if the worker is properly configured.
+
+Example:
+
+```bash
+curl -X GET https://notion-to-r2-worker.example.workers.dev/check-config
 ```
 
-This will deploy your worker to Cloudflare.
+### GET /list-bucket
 
-### Triggering the Worker
+List the contents of the R2 bucket.
 
-The worker can be triggered in three ways:
+Example:
 
-1. **Automatically via schedule**: The worker runs according to the cron schedule in `wrangler.toml`
+```bash
+curl -X GET https://notion-to-r2-worker.example.workers.dev/list-bucket
+```
 
-2. **Manually via API**: Send a POST request to the `/sync` endpoint with the admin key:
+### PUT /{filename}
 
+Upload a file to R2 storage.
+
+Example:
+
+```bash
+curl -X PUT https://notion-to-r2-worker.example.workers.dev/test.json --data '{"test":"data"}' -H "Content-Type: application/json"
+```
+
+## Scheduled Execution
+
+The worker is configured to run automatically once per day at 5:00 AM UTC. You can modify this schedule by changing the cron pattern in the `wrangler.toml` file.
+
+## Logging and Monitoring
+
+The worker uses Cloudflare Workers Logs for observability. You can view logs in the Cloudflare dashboard:
+
+1. Go to the Cloudflare dashboard
+2. Navigate to Workers & Pages
+3. Select your worker
+4. Click on the "Logs" tab
+
+## Troubleshooting
+
+### Common Issues
+
+1. **"Invalid request URL" error**:
+
+   - Check if your `NOTION_API_KEY` and `NOTION_DATABASE_ID` secrets are properly set
+   - Verify that your integration has access to the database
+
+2. **"Object Not Found" when requesting blog-data.json**:
+
+   - Manually trigger the worker using the `/run-test` endpoint
+   - Check the worker logs for errors
+
+3. **"Worker execution timeout"**:
+   - The Notion database might be too large; consider filtering the data
+
+### Verifying Your Setup
+
+Use the following steps to verify your worker is functioning correctly:
+
+1. Check your configuration:
+
+   ```bash
+   curl -X GET https://notion-to-r2-worker.example.workers.dev/check-config
    ```
-   curl -X POST https://your-worker.your-subdomain.workers.dev/sync -H "X-Admin-Key: your-admin-key"
+
+2. Trigger the Notion-to-R2 process:
+
+   ```bash
+   curl -X POST https://notion-to-r2-worker.example.workers.dev/run-test
    ```
 
-3. **Direct PUT**: Upload any file directly to R2:
-   ```
-   curl -X PUT https://your-worker.your-subdomain.workers.dev/path-to-file --data-binary @localfile.json
+3. Verify the file was created:
+
+   ```bash
+   curl -X GET https://notion-to-r2-worker.example.workers.dev/list-bucket
    ```
 
-## Project Structure
+4. Retrieve the file:
 
-- `worker.js`: Main worker code that handles requests and scheduled triggers
-- `wrangler.toml`: Configuration file for Cloudflare Workers
-- `package.json`: Node.js dependencies and scripts
-- `notion-to-r2.js`: Original Node.js implementation (kept for reference)
+   ```bash
+   curl -X GET https://notion-to-r2-worker.example.workers.dev/blog-data.json
+   ```
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## License
 
-MIT
+This project is licensed under the MIT License - see the LICENSE file for details.

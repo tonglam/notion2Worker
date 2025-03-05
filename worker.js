@@ -1,28 +1,203 @@
 // worker.js
-const { Client } = require("@notionhq/client");
-const { NotionToMarkdown } = require("notion-to-md");
+import { Client } from "@notionhq/client";
+import { NotionToMarkdown } from "notion-to-md";
 
 /**
  * Cloudflare Worker for Notion to R2 integration
  * The worker fetches data from Notion and stores it in R2
  */
-module.exports = {
+export default {
   // Scheduled trigger (runs automatically according to cron pattern)
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(fetchNotionDataToR2(env));
+    console.log("[INFO] Scheduled event triggered");
+    try {
+      ctx.waitUntil(fetchNotionDataToR2(env));
+    } catch (error) {
+      console.error(`[ERROR] Scheduled event failed: ${error.message}`);
+    }
   },
 
   // HTTP request handler (for API usage)
   async fetch(request, env, ctx) {
+    console.log(
+      `[REQUEST] Handling ${request.method} request to ${request.url}`
+    );
     const url = new URL(request.url);
     const path = url.pathname.slice(1);
 
-    // Allow direct PUT operations to R2
-    if (request.method === "PUT") {
+    // Add an endpoint to check configuration
+    if (request.method === "GET" && path === "check-config") {
+      console.log(`[CONFIG CHECK] Verifying configuration`);
       try {
-        await env.MY_BUCKET.put(path, request.body);
+        // Safely check configuration (don't expose actual values)
+        const configStatus = {
+          NOTION_API_KEY: env.NOTION_API_KEY ? "Set" : "Not Set",
+          NOTION_DATABASE_ID: env.NOTION_DATABASE_ID ? "Set" : "Not Set",
+          R2_BUCKET: env.MY_BUCKET ? "Connected" : "Not Connected",
+          timestamp: new Date().toISOString(),
+        };
+
+        console.log(
+          `[CONFIG CHECK] Configuration status: ${JSON.stringify(configStatus)}`
+        );
+        return new Response(JSON.stringify(configStatus, null, 2), {
+          headers: { "Content-Type": "application/json" },
+        });
+      } catch (error) {
+        console.error(
+          `[CONFIG ERROR] Error checking configuration: ${error.message}`
+        );
+        return new Response(`Error checking configuration: ${error.message}`, {
+          status: 500,
+        });
+      }
+    }
+
+    // Add an endpoint to get bucket contents
+    if (request.method === "GET" && path === "list-bucket") {
+      console.log(`[BUCKET] Listing bucket contents`);
+      try {
+        const options = {
+          limit: 100,
+          prefix: request.query?.prefix || "",
+        };
+
+        const objects = await env.MY_BUCKET.list(options);
+
+        const fileList = {
+          files: objects.objects.map((obj) => ({
+            name: obj.key,
+            size: obj.size,
+            uploaded: obj.uploaded,
+          })),
+          count: objects.objects.length,
+          truncated: objects.truncated,
+        };
+
+        console.log(`[BUCKET] Found ${fileList.count} files in bucket`);
+        return new Response(JSON.stringify(fileList, null, 2), {
+          headers: { "Content-Type": "application/json" },
+        });
+      } catch (error) {
+        console.error(
+          `[BUCKET ERROR] Error listing bucket contents: ${error.message}`
+        );
+        return new Response(`Error listing bucket contents: ${error.message}`, {
+          status: 500,
+        });
+      }
+    }
+
+    // Add manual trigger endpoint with detailed response
+    if (request.method === "POST" && path === "run-test") {
+      console.log("[TRIGGER] Manual trigger received for Notion to R2 process");
+
+      try {
+        // Create a Response to return immediately
+        const response = new Response(
+          JSON.stringify({
+            message: "Notion-to-R2 process triggered manually",
+            status: "running in background",
+            triggerTime: new Date().toISOString(),
+          }),
+          {
+            headers: { "Content-Type": "application/json" },
+          }
+        );
+
+        // Use waitUntil to allow the fetch to return while the processing continues
+        ctx.waitUntil(
+          (async () => {
+            try {
+              console.log("[TRIGGER] Starting async process for Notion to R2");
+              await fetchNotionDataToR2(env);
+              console.log("[TRIGGER] Async process completed successfully");
+            } catch (error) {
+              console.error(
+                `[TRIGGER ERROR] Async process failed: ${error.message}`
+              );
+              console.error(error.stack);
+            }
+          })()
+        );
+
+        return response;
+      } catch (error) {
+        console.error(
+          `[TRIGGER ERROR] Error setting up trigger: ${error.message}`
+        );
+        return new Response(`Error triggering process: ${error.message}`, {
+          status: 500,
+        });
+      }
+    }
+
+    // GET endpoint to serve files from R2
+    if (request.method === "GET" && path) {
+      console.log(`[GET] Request for file: ${path}`);
+      try {
+        const object = await env.MY_BUCKET.get(path);
+
+        if (object === null) {
+          console.log(`[GET] Object not found: ${path}`);
+          return new Response("Object Not Found", { status: 404 });
+        }
+
+        console.log(
+          `[GET] Successfully retrieved: ${path} (${object.size} bytes)`
+        );
+
+        // Get content type from object metadata or infer from extension
+        let contentType = object.httpMetadata?.contentType;
+        if (!contentType) {
+          if (path.endsWith(".json")) contentType = "application/json";
+          else if (path.endsWith(".txt")) contentType = "text/plain";
+          else contentType = "application/octet-stream";
+        }
+
+        return new Response(object.body, {
+          headers: {
+            "Content-Type": contentType,
+            "Cache-Control":
+              object.httpMetadata?.cacheControl || "max-age=3600",
+          },
+        });
+      } catch (error) {
+        console.error(
+          `[GET ERROR] Error retrieving file ${path}: ${error.message}`
+        );
+        return new Response(`Error retrieving file: ${error.message}`, {
+          status: 500,
+        });
+      }
+    }
+
+    // PUT operations to R2
+    if (request.method === "PUT" && path) {
+      console.log(`[PUT] Request to store file: ${path}`);
+      try {
+        // Determine content type from request headers or filename
+        let contentType = request.headers.get("Content-Type");
+        if (!contentType) {
+          if (path.endsWith(".json")) contentType = "application/json";
+          else if (path.endsWith(".txt")) contentType = "text/plain";
+          else contentType = "application/octet-stream";
+        }
+
+        // Store with metadata
+        await env.MY_BUCKET.put(path, request.body, {
+          httpMetadata: {
+            contentType: contentType,
+            cacheControl: "max-age=3600",
+          },
+        });
+
+        console.log(`[PUT] Successfully stored file: ${path}`);
         return new Response(`Put ${path} successfully!`);
       } catch (error) {
+        console.error(
+          `[PUT ERROR] Error storing file ${path}: ${error.message}`
+        );
         return new Response(`Error storing data: ${error.message}`, {
           status: 500,
         });
@@ -30,10 +205,11 @@ module.exports = {
     }
 
     // Handle other request methods
-    return new Response(`${request.method} is not allowed.`, {
+    console.log(`[ERROR] Unsupported method: ${request.method}`);
+    return new Response(`${request.method} is not allowed for path: ${path}`, {
       status: 405,
       headers: {
-        Allow: "PUT",
+        Allow: "GET, PUT, POST",
       },
     });
   },
@@ -43,142 +219,68 @@ module.exports = {
  * Main function to fetch data from Notion and save it to R2
  */
 async function fetchNotionDataToR2(env) {
-  console.log("Starting Notion data fetch...");
+  console.log("[INFO] Starting Notion data fetch process");
 
   try {
     // Initialize Notion client
     const notion = new Client({ auth: env.NOTION_API_KEY });
     const n2m = new NotionToMarkdown({ notionClient: notion });
 
-    // 1. Call the Notion DB and fetch all data
-    const response = await notion.databases.query({
-      database_id: env.NOTION_DATABASE_ID,
-      filter: {
-        property: "Published",
-        checkbox: { equals: true },
-      },
-      sorts: [{ property: "Date", direction: "descending" }],
-      page_size: 100, // Maximum allowed by Notion API
-    });
+    try {
+      // Query the Notion database
+      console.log(
+        `[INFO] Querying Notion database: ${env.NOTION_DATABASE_ID.substring(
+          0,
+          8
+        )}...`
+      );
+      const response = await notion.databases.query({
+        database_id: env.NOTION_DATABASE_ID,
+        page_size: 100, // Maximum allowed by Notion API
+      });
 
-    console.log(`Found ${response.results.length} published posts in Notion`);
+      console.log(
+        `[INFO] Retrieved ${response.results.length} pages from Notion database`
+      );
 
-    // 2. Create structured data in a convenient format
-    const posts = [];
-    const categories = new Set(["All"]);
+      // Store the raw data for debugging
+      console.log("[INFO] Preparing data for R2 storage");
+      const jsonData = JSON.stringify(response.results, null, 2);
 
-    for (const page of response.results) {
-      // Format basic info
-      const post = formatPost(page);
-
-      // Add category to categories set
-      if (post.category) {
-        categories.add(post.category);
-      }
-
-      // Get content
+      // Upload to R2
+      console.log("[INFO] Uploading to R2 as blog-data.json");
       try {
-        const mdBlocks = await n2m.pageToMarkdown(page.id);
-        post.content = n2m.toMarkdownString(mdBlocks).parent;
-      } catch (error) {
-        console.error(`Error getting content for ${post.title}:`, error);
-        post.content = "Error loading content";
+        await env.MY_BUCKET.put("blog-data.json", jsonData, {
+          httpMetadata: {
+            contentType: "application/json",
+            cacheControl: "max-age=3600", // Cache for 1 hour
+          },
+        });
+        console.log("[INFO] Successfully uploaded blog-data.json to R2 bucket");
+
+        return response.results;
+      } catch (r2Error) {
+        console.error(`[ERROR] Failed to upload to R2: ${r2Error.message}`);
+        throw r2Error;
+      }
+    } catch (queryError) {
+      console.error(
+        `[ERROR] Notion database query failed: ${queryError.message}`
+      );
+
+      // Additional error information for Notion API errors
+      if (queryError.code) {
+        console.error(
+          `[ERROR] Notion API error: ${queryError.code} - ${queryError.message}`
+        );
       }
 
-      posts.push(post);
+      throw queryError;
     }
-
-    // Build final data object
-    const blogData = {
-      posts,
-      categories: Array.from(categories),
-      totalPosts: posts.length,
-      lastUpdated: new Date().toISOString(),
-    };
-
-    // 3. Store the Notion data in R2
-    const jsonData = JSON.stringify(blogData, null, 2);
-
-    // Upload to R2 using direct binding instead of S3 API
-    await env.MY_BUCKET.put("blog-data.json", jsonData, {
-      httpMetadata: {
-        contentType: "application/json",
-        cacheControl: "max-age=3600", // Cache for 1 hour
-      },
-    });
-
-    console.log(`Success! Uploaded ${posts.length} posts to R2 bucket`);
-
-    // Also create a timestamped backup
-    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-    await env.MY_BUCKET.put(`backups/blog-data-${timestamp}.json`, jsonData, {
-      httpMetadata: {
-        contentType: "application/json",
-      },
-    });
-
-    console.log(`Created backup at backups/blog-data-${timestamp}.json`);
-
-    return blogData;
   } catch (error) {
-    console.error("Error fetching Notion data or uploading to R2:", error);
+    console.error(`[ERROR] Error in fetchNotionDataToR2: ${error.message}`);
     throw error;
   }
-}
-
-/**
- * Format a Notion page into a clean blog post object
- */
-function formatPost(page) {
-  const props = page.properties;
-
-  // Extract title
-  const title =
-    props.Title?.title?.map((t) => t.plain_text).join("") || "Untitled";
-
-  // Extract date
-  const dateProperty = props.Date?.date;
-  let date = "No date";
-  let isoDate = null;
-
-  if (dateProperty) {
-    const postDate = new Date(dateProperty.start);
-    isoDate = postDate.toISOString();
-
-    // Calculate relative time for display
-    const now = new Date();
-    const diffInMonths = (now - postDate) / (1000 * 60 * 60 * 24 * 30);
-
-    if (diffInMonths < 1) {
-      const diffInDays = Math.floor((now - postDate) / (1000 * 60 * 60 * 24));
-      date = diffInDays <= 1 ? "Today" : `${diffInDays} days ago`;
-    } else if (diffInMonths < 12) {
-      const months = Math.floor(diffInMonths);
-      date = `${months} ${months === 1 ? "month" : "months"} ago`;
-    } else {
-      const years = Math.floor(diffInMonths / 12);
-      date = `${years} ${years === 1 ? "year" : "years"} ago`;
-    }
-  }
-
-  // Extract other properties
-  return {
-    id: page.id,
-    title,
-    date,
-    isoDate,
-    summary: props.Summary?.rich_text?.map((t) => t.plain_text).join("") || "",
-    category: props.Category?.select?.name || "Uncategorized",
-    slug:
-      props.Slug?.rich_text?.map((t) => t.plain_text).join("") ||
-      title.toLowerCase().replace(/\s+/g, "-"),
-    r2ImageUrl: props.R2ImageUrl?.url || "/images/blog-placeholder.jpg",
-    minRead:
-      props.MinRead?.rich_text?.map((t) => t.plain_text).join("") ||
-      "2 Min Read",
-    likes: props.Likes?.number || 0,
-    comments: props.Comments?.number || 0,
-  };
 }
 
 /**
@@ -187,15 +289,158 @@ function formatPost(page) {
 
 // HTTP request handler for API usage
 async function handleFetch(request, env, ctx) {
+  console.log(`[REQUEST] Handling ${request.method} request to ${request.url}`);
   const url = new URL(request.url);
   const path = url.pathname.slice(1);
 
-  // Allow direct PUT operations to R2
-  if (request.method === "PUT") {
+  // Configuration check endpoint
+  if (request.method === "GET" && path === "check-config") {
     try {
-      await env.MY_BUCKET.put(path, request.body);
+      // Safely check configuration (don't expose actual values)
+      const configStatus = {
+        NOTION_API_KEY: env.NOTION_API_KEY ? "Set" : "Not Set",
+        NOTION_DATABASE_ID: env.NOTION_DATABASE_ID ? "Set" : "Not Set",
+        R2_BUCKET: env.MY_BUCKET ? "Connected" : "Not Connected",
+        timestamp: new Date().toISOString(),
+      };
+
+      return new Response(JSON.stringify(configStatus, null, 2), {
+        headers: { "Content-Type": "application/json" },
+      });
+    } catch (error) {
+      console.error(`[ERROR] Configuration check failed: ${error.message}`);
+      return new Response(`Error checking configuration: ${error.message}`, {
+        status: 500,
+      });
+    }
+  }
+
+  // List bucket contents endpoint
+  if (request.method === "GET" && path === "list-bucket") {
+    try {
+      const options = {
+        limit: 100,
+        prefix: request.query?.prefix || "",
+      };
+
+      const objects = await env.MY_BUCKET.list(options);
+
+      const fileList = {
+        files: objects.objects.map((obj) => ({
+          name: obj.key,
+          size: obj.size,
+          uploaded: obj.uploaded,
+        })),
+        count: objects.objects.length,
+        truncated: objects.truncated,
+      };
+
+      return new Response(JSON.stringify(fileList, null, 2), {
+        headers: { "Content-Type": "application/json" },
+      });
+    } catch (error) {
+      console.error(`[ERROR] Listing bucket contents failed: ${error.message}`);
+      return new Response(`Error listing bucket contents: ${error.message}`, {
+        status: 500,
+      });
+    }
+  }
+
+  // Manual trigger endpoint
+  if (request.method === "POST" && path === "run-test") {
+    console.log("[INFO] Manual trigger received for Notion to R2 process");
+
+    try {
+      // Create a Response to return immediately
+      const response = new Response(
+        JSON.stringify({
+          message: "Notion-to-R2 process triggered manually",
+          status: "running in background",
+          triggerTime: new Date().toISOString(),
+        }),
+        {
+          headers: { "Content-Type": "application/json" },
+        }
+      );
+
+      // Use waitUntil to allow the fetch to return while the processing continues
+      ctx.waitUntil(
+        (async () => {
+          try {
+            await fetchNotionDataToR2(env);
+            console.log("[INFO] Notion to R2 process completed successfully");
+          } catch (error) {
+            console.error(
+              `[ERROR] Notion to R2 process failed: ${error.message}`
+            );
+          }
+        })()
+      );
+
+      return response;
+    } catch (error) {
+      console.error(`[ERROR] Failed to trigger process: ${error.message}`);
+      return new Response(`Error triggering process: ${error.message}`, {
+        status: 500,
+      });
+    }
+  }
+
+  // GET endpoint to serve files from R2
+  if (request.method === "GET" && path) {
+    try {
+      const object = await env.MY_BUCKET.get(path);
+
+      if (object === null) {
+        return new Response("Object Not Found", { status: 404 });
+      }
+
+      // Get content type from object metadata or infer from extension
+      let contentType = object.httpMetadata?.contentType;
+      if (!contentType) {
+        if (path.endsWith(".json")) contentType = "application/json";
+        else if (path.endsWith(".txt")) contentType = "text/plain";
+        else contentType = "application/octet-stream";
+      }
+
+      return new Response(object.body, {
+        headers: {
+          "Content-Type": contentType,
+          "Cache-Control": object.httpMetadata?.cacheControl || "max-age=3600",
+        },
+      });
+    } catch (error) {
+      console.error(
+        `[ERROR] Failed to retrieve file ${path}: ${error.message}`
+      );
+      return new Response(`Error retrieving file: ${error.message}`, {
+        status: 500,
+      });
+    }
+  }
+
+  // PUT operations to R2
+  if (request.method === "PUT" && path) {
+    try {
+      // Determine content type from request headers or filename
+      let contentType = request.headers.get("Content-Type");
+      if (!contentType) {
+        if (path.endsWith(".json")) contentType = "application/json";
+        else if (path.endsWith(".txt")) contentType = "text/plain";
+        else contentType = "application/octet-stream";
+      }
+
+      // Store with metadata
+      await env.MY_BUCKET.put(path, request.body, {
+        httpMetadata: {
+          contentType: contentType,
+          cacheControl: "max-age=3600",
+        },
+      });
+
       return new Response(`Put ${path} successfully!`);
     } catch (error) {
+      console.error(`[ERROR] Failed to store file ${path}: ${error.message}`);
       return new Response(`Error storing data: ${error.message}`, {
         status: 500,
       });
@@ -203,17 +448,22 @@ async function handleFetch(request, env, ctx) {
   }
 
   // Handle other request methods
-  return new Response(`${request.method} is not allowed.`, {
+  return new Response(`${request.method} is not allowed for path: ${path}`, {
     status: 405,
     headers: {
-      Allow: "PUT",
+      Allow: "GET, PUT, POST",
     },
   });
 }
 
 // Scheduled trigger handler
 async function handleScheduled(event, env, ctx) {
-  ctx.waitUntil(fetchNotionDataToR2(env));
+  console.log("[INFO] Scheduled event triggered");
+  try {
+    ctx.waitUntil(fetchNotionDataToR2(env));
+  } catch (error) {
+    console.error(`[ERROR] Scheduled event failed: ${error.message}`);
+  }
 }
 
 // Export handlers in the format expected by Cloudflare Workers
