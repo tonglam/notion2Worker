@@ -227,28 +227,72 @@ async function fetchNotionDataToR2(env) {
     const n2m = new NotionToMarkdown({ notionClient: notion });
 
     try {
-      // Query the Notion database
+      // First, retrieve database metadata
+      console.log(`[INFO] Retrieving database metadata...`);
+      const databaseInfo = await notion.databases.retrieve({
+        database_id: env.NOTION_DATABASE_ID,
+      });
       console.log(
-        `[INFO] Querying Notion database: ${env.NOTION_DATABASE_ID.substring(
+        `[INFO] Database title: ${
+          databaseInfo.title[0]?.plain_text || "Unnamed Database"
+        }`
+      );
+
+      // Start querying the database with pagination to get ALL records
+      console.log(
+        `[INFO] Starting pagination to retrieve ALL records from Notion database: ${env.NOTION_DATABASE_ID.substring(
           0,
           8
         )}...`
       );
-      const response = await notion.databases.query({
-        database_id: env.NOTION_DATABASE_ID,
-        page_size: 100, // Maximum allowed by Notion API
-      });
 
-      console.log(
-        `[INFO] Retrieved ${response.results.length} pages from Notion database`
-      );
+      let allResults = [];
+      let hasMore = true;
+      let nextCursor = undefined;
+      let pageCount = 0;
 
-      // Store the raw data for debugging
-      console.log("[INFO] Preparing data for R2 storage");
-      const jsonData = JSON.stringify(response.results, null, 2);
+      // Implement pagination to retrieve all pages
+      while (hasMore) {
+        pageCount++;
+        console.log(`[INFO] Fetching page ${pageCount} of results...`);
+
+        const response = await notion.databases.query({
+          database_id: env.NOTION_DATABASE_ID,
+          page_size: 100, // Maximum allowed by Notion API
+          start_cursor: nextCursor,
+        });
+
+        allResults = [...allResults, ...response.results];
+        hasMore = response.has_more;
+        nextCursor = response.next_cursor;
+
+        console.log(
+          `[INFO] Retrieved ${response.results.length} records (total so far: ${allResults.length})`
+        );
+
+        if (hasMore) {
+          console.log(
+            `[INFO] More records available, continuing pagination...`
+          );
+        }
+      }
+
+      console.log(`[INFO] Pagination complete!`);
+      console.log(`[INFO] =============================================`);
+      console.log(`[INFO] VERIFICATION:`);
+      console.log(`[INFO] Total pages fetched: ${pageCount}`);
+      console.log(`[INFO] Total records retrieved: ${allResults.length}`);
+      console.log(`[INFO] =============================================`);
+
+      // Store the complete data
+      console.log("[INFO] Preparing ALL data for R2 storage");
+      const jsonData = JSON.stringify(allResults, null, 2);
+      const fileSizeKB = (jsonData.length / 1024).toFixed(2);
 
       // Upload to R2
-      console.log("[INFO] Uploading to R2 as blog-data.json");
+      console.log(
+        `[INFO] Uploading to R2 as blog-data.json (${fileSizeKB} KB)`
+      );
       try {
         await env.MY_BUCKET.put("blog-data.json", jsonData, {
           httpMetadata: {
@@ -256,9 +300,11 @@ async function fetchNotionDataToR2(env) {
             cacheControl: "max-age=3600", // Cache for 1 hour
           },
         });
-        console.log("[INFO] Successfully uploaded blog-data.json to R2 bucket");
+        console.log(
+          `[INFO] Successfully uploaded blog-data.json to R2 bucket (${fileSizeKB} KB)`
+        );
 
-        return response.results;
+        return allResults;
       } catch (r2Error) {
         console.error(`[ERROR] Failed to upload to R2: ${r2Error.message}`);
         throw r2Error;

@@ -205,10 +205,6 @@ Use the following steps to verify your worker is functioning correctly:
    curl -X GET https://notion-to-r2-worker.example.workers.dev/blog-data.json
    ```
 
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
 ## License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
